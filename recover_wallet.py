@@ -144,6 +144,47 @@ def display_wallet_info(wallet):
     # Display total balance
     print(f"\nTotal Balance: {total_balance / 1e8:.8f} BTC")
 
+def calculate_safe_transaction_fee(network='bitcoin'):
+    """
+    Calculate a safe and reasonable transaction fee with strict limits
+    Returns fee in satoshis
+    """
+    try:
+        from bitcoinlib.services.services import Service
+        service = Service(network=network)
+        fee_per_kb = service.estimatefee(4)  # Target 4 blocks
+        
+        # Log the raw estimation
+        print(f"Raw fee estimation from service: {fee_per_kb} BTC/KB")
+        
+        # Sanity check - if fee is unreasonably high, use fallback
+        if fee_per_kb > 0.001:  # If > 0.001 BTC/KB, something is wrong
+            print(f"Fee estimation too high ({fee_per_kb} BTC/KB), using fallback")
+            fee_per_kb = 0.0001  # Fallback to 0.0001 BTC/KB
+        
+        # Convert to satoshis for a typical transaction (250 bytes)
+        tx_size = 250  # bytes
+        estimated_fee = int(fee_per_kb * 1e8 * tx_size / 1024)
+        
+        # Apply strict limits
+        MIN_FEE = 1000    # 1000 satoshis (0.00001 BTC)
+        MAX_FEE = 25000   # 25000 satoshis (0.00025 BTC)
+        SAFE_DEFAULT = 5000  # 5000 satoshis (0.00005 BTC)
+        
+        if estimated_fee > MAX_FEE:
+            print(f"Estimated fee too high ({estimated_fee} satoshis), capping at {MAX_FEE}")
+            return MAX_FEE
+        elif estimated_fee < MIN_FEE:
+            print(f"Estimated fee too low ({estimated_fee} satoshis), using minimum {MIN_FEE}")
+            return MIN_FEE
+        else:
+            return estimated_fee
+            
+    except Exception as e:
+        print(f"Error estimating fee: {e}")
+        print("Using safe default fee")
+        return 5000  # Safe default (0.00005 BTC)
+
 def send_transaction(wallet, to_address, amount=None, fee=None):
     """
     Send a transaction from the wallet
@@ -156,20 +197,29 @@ def send_transaction(wallet, to_address, amount=None, fee=None):
         print("Wallet has zero balance")
         return
     
+    # If fee is not specified, calculate a safe fee
+    if fee is None:
+        fee = calculate_safe_transaction_fee(wallet.network.name)
+    
+    # Show fee in both satoshis and BTC
+    print(f"\nTransaction fee: {fee} satoshis ({fee / 1e8:.8f} BTC)")
+    
+    # Allow user to modify the fee if desired
+    modify_fee = input("Would you like to modify the fee? (y/n): ").lower().strip()
+    if modify_fee == 'y':
+        custom_fee_input = input(f"Enter custom fee in satoshis (1000-25000, current: {fee}): ")
+        try:
+            custom_fee = int(custom_fee_input)
+            if 1000 <= custom_fee <= 25000:
+                fee = custom_fee
+                print(f"Using custom fee: {fee} satoshis ({fee / 1e8:.8f} BTC)")
+            else:
+                print("Fee must be between 1000-25000 satoshis. Using calculated fee.")
+        except ValueError:
+            print("Invalid input. Using calculated fee.")
+    
     # If amount is not specified, send entire balance minus fee
     if amount is None:
-        if fee is None:
-            # Estimate fee (default to 5000 satoshis if estimation fails)
-            try:
-                from bitcoinlib.services.services import Service
-                service = Service(network=wallet.network.name)
-                fee_per_kb = service.estimatefee(4)  # Target 4 blocks
-                # Assuming a typical transaction size of ~250 bytes
-                fee = int(fee_per_kb * 1e8 * 250 / 1024)
-                fee = max(fee, 5000)  # Minimum 5000 satoshis
-            except:
-                fee = 5000  # Default fee if estimation fails
-        
         amount = balance - fee
     
     if amount <= 0:
@@ -178,6 +228,7 @@ def send_transaction(wallet, to_address, amount=None, fee=None):
     
     print(f"\nPreparing to send {amount / 1e8:.8f} BTC to {to_address}")
     print(f"Transaction fee: {fee / 1e8:.8f} BTC")
+    print(f"Total to be deducted from wallet: {(amount + fee) / 1e8:.8f} BTC")
     
     confirm = input("Confirm transaction? (y/n): ").lower().strip()
     if confirm != 'y':
@@ -185,15 +236,85 @@ def send_transaction(wallet, to_address, amount=None, fee=None):
         return
     
     try:
+        print("Sending transaction... This might take a few moments.")
         tx = wallet.send_to(to_address, amount, fee=fee)
+        
+        # Try to get transaction ID
+        tx_id = None
+        for attr in ['hash', 'txid', 'tx_hash', 'id']:
+            if hasattr(tx, attr):
+                tx_id = getattr(tx, attr)
+                break
+        
         print(f"\nTransaction sent successfully!")
-        print(f"Transaction ID: {tx.hash}")
+        print(f"Transaction ID: {tx_id or 'Unknown'}")
         print(f"Amount: {amount / 1e8:.8f} BTC")
         print(f"Fee: {fee / 1e8:.8f} BTC")
+        
+        print("\nPlease verify this transaction in a blockchain explorer.")
         return tx
     except Exception as e:
         print(f"Error sending transaction: {e}")
         return None
+
+def display_wallet_transactions(wallet):
+    """
+    Display recent transactions for the wallet including pending ones
+    """
+    print("\nRecent Transactions:")
+    print("-" * 80)
+    print(f"{'Transaction ID':<65} {'Type':<8} {'Amount':<15} {'Status'}")
+    print("-" * 80)
+    
+    try:
+        # Scan wallet to ensure we have the latest transactions
+        wallet.scan()
+        
+        # Try different ways to get transactions
+        transactions = []
+        if hasattr(wallet, 'transactions') and callable(getattr(wallet, 'transactions')):
+            try:
+                transactions = wallet.transactions()
+            except Exception as e:
+                print(f"Warning: Error retrieving transactions: {e}")
+        
+        if not transactions:
+            print("No transactions found or unable to retrieve transaction history")
+            return
+        
+        for tx in transactions:
+            tx_id = None
+            tx_type = "Unknown"
+            amount = 0
+            status = "Unknown"
+            
+            # Try to get transaction ID
+            for attr in ['txid', 'hash', 'tx_hash', 'id']:
+                if hasattr(tx, attr):
+                    tx_id = getattr(tx, attr)
+                    break
+            
+            # Try to get transaction type
+            if hasattr(tx, 'input_total') and hasattr(tx, 'output_total'):
+                if tx.input_total > tx.output_total:
+                    tx_type = "Outgoing"
+                    amount = -(tx.input_total - tx.output_total)
+                else:
+                    tx_type = "Incoming"
+                    amount = tx.output_total - tx.input_total
+            
+            # Try to get status
+            if hasattr(tx, 'status'):
+                status = tx.status
+            elif hasattr(tx, 'confirmations'):
+                status = "Confirmed" if tx.confirmations > 0 else "Pending"
+            
+            print(f"{tx_id or 'Unknown':<65} {tx_type:<8} {amount / 1e8:>14.8f} {status}")
+    
+    except Exception as e:
+        print(f"Error retrieving transaction history: {e}")
+    
+    print("-" * 80)
 
 def main():
     print("\nBitcoin Wallet Recovery Tool")
@@ -219,6 +340,9 @@ def main():
     
     # Display wallet info
     display_wallet_info(wallet)
+    
+    # Display recent transactions
+    display_wallet_transactions(wallet)
     
     # Check if wallet has balance
     if wallet.balance() <= 0:
