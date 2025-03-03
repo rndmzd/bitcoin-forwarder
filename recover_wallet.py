@@ -36,7 +36,15 @@ def list_available_wallets():
         return False
     
     for wallet_info in wallets:
-        print(f"{wallet_info['name']:<30} {wallet_info['network_name']:<10} {'Active'}")
+        # Get network name using different possible keys
+        network = "Unknown"
+        for key in ['network_name', 'network', 'scheme']:
+            if key in wallet_info:
+                network = wallet_info[key]
+                break
+        
+        name = wallet_info.get('name', 'Unknown')
+        print(f"{name:<30} {network:<10} {'Active'}")
     
     print("-" * 60)
     return True
