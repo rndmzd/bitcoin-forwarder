@@ -60,41 +60,130 @@ def extract_wallet_seed(wallet_name):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # Try to find the seed directly in the database
+        # First, check the schema to see what columns are available
+        cursor.execute("PRAGMA table_info(keys)")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        # Look for potential seed columns
+        seed_columns = [col for col in columns if 'seed' in col.lower()]
+        print(f"Found potential seed columns: {seed_columns}")
+        
+        # Try different approaches based on available columns
+        wallet_data = None
+        if 'seed_hex' in columns:
+            cursor.execute(
+                "SELECT seed_hex, wallet_id FROM keys WHERE wallet_id IN "
+                "(SELECT id FROM wallets WHERE name=?)", 
+                (wallet_name,)
+            )
+            wallet_data = cursor.fetchone()
+        elif 'seed' in columns:
+            cursor.execute(
+                "SELECT seed, wallet_id FROM keys WHERE wallet_id IN "
+                "(SELECT id FROM wallets WHERE name=?)", 
+                (wallet_name,)
+            )
+            wallet_data = cursor.fetchone()
+        
+        # Check for private master key
+        master_key_data = None
+        if 'private' in columns and 'is_private' in columns:
+            cursor.execute(
+                "SELECT private, wallet_id FROM keys WHERE wallet_id IN "
+                "(SELECT id FROM wallets WHERE name=?) AND is_private=1 AND (path='m' OR path='' OR path IS NULL) LIMIT 1", 
+                (wallet_name,)
+            )
+            master_key_data = cursor.fetchone()
+        
+        # Show wallet structure
+        print("\nExamining wallet database structure...")
+        print(f"Wallet name: {wallet_name}")
+        
+        # Get wallet ID
+        cursor.execute("SELECT id FROM wallets WHERE name=?", (wallet_name,))
+        wallet_id_data = cursor.fetchone()
+        
+        if wallet_id_data:
+            wallet_id = wallet_id_data[0]
+            print(f"Wallet ID: {wallet_id}")
+            
+            # Count keys
+            cursor.execute("SELECT COUNT(*) FROM keys WHERE wallet_id=?", (wallet_id,))
+            key_count = cursor.fetchone()[0]
+            print(f"Number of keys: {key_count}")
+            
+            # Get master key info
+            cursor.execute(
+                "SELECT id, path, address, public, private, is_private FROM keys "
+                "WHERE wallet_id=? AND (path='m' OR path='' OR path IS NULL) LIMIT 1", 
+                (wallet_id,)
+            )
+            master_key_row = cursor.fetchone()
+            
+            if master_key_row:
+                print("\nMaster key found:")
+                id, path, address, public, private, is_private = master_key_row
+                print(f"ID: {id}")
+                print(f"Path: {path}")
+                print(f"Address: {address}")
+                print(f"Is private: {is_private}")
+                
+                if private and is_private:
+                    try:
+                        from bitcoinlib.keys import HDKey
+                        master_key = HDKey.from_wif(private)
+                        if hasattr(master_key, 'wif'):
+                            print(f"\nMaster Private Key (WIF): {master_key.wif}")
+                            print("You can import this key into Electrum")
+                        
+                        # Try to get seed from master key
+                        if hasattr(master_key, 'seed_hex') and master_key.seed_hex:
+                            seed_hex = master_key.seed_hex
+                            print(f"\nFound seed from master key: {seed_hex}")
+                            
+                            try:
+                                from bitcoinlib.mnemonic import Mnemonic
+                                mnemonic = Mnemonic().to_mnemonic(binascii.unhexlify(seed_hex))
+                                print("\nWALLET RECOVERY SEED PHRASE:")
+                                print(f"{mnemonic}")
+                                print("\n⚠️ This is your wallet recovery phrase - store it securely!")
+                                return seed_hex
+                            except Exception as e:
+                                print(f"Could not convert to mnemonic: {e}")
+                    except Exception as e:
+                        print(f"Error processing master key: {e}")
+        
+        # Dump important tables to inspect structure
+        print("\nExporting keys to human-readable format...")
         cursor.execute(
-            "SELECT seed_hex, wallet_id FROM keys WHERE wallet_id IN "
-            "(SELECT id FROM wallets WHERE name=?)", 
+            "SELECT id, path, address, wif, public, private, is_private FROM keys "
+            "WHERE wallet_id IN (SELECT id FROM wallets WHERE name=?) LIMIT 10", 
             (wallet_name,)
         )
-        seed_data = cursor.fetchone()
+        keys = cursor.fetchall()
         
-        if seed_data and seed_data[0]:
-            print("Found seed in database!")
-            seed_hex = seed_data[0]
-            
-            # Try to create HDKey from seed
-            try:
-                # Try to display as mnemonic
-                from bitcoinlib.mnemonic import Mnemonic
-                try:
-                    mnemonic = Mnemonic().to_mnemonic(binascii.unhexlify(seed_hex))
-                    print("\nWALLET RECOVERY SEED PHRASE:")
-                    print(f"{mnemonic}")
-                    print("\n⚠️ This is your wallet recovery phrase - store it securely!")
-                    print("You can import this directly into Electrum by selecting 'I already have a seed'")
-                    return seed_hex
-                except:
-                    print("Could not convert seed to mnemonic, but have raw hex seed.")
-                    print(f"Seed Hex: {seed_hex}")
-                    return seed_hex
-            except Exception as e:
-                print(f"Error creating key from seed: {e}")
-                print(f"Raw seed data: {seed_hex}")
-                return seed_hex
-        else:
-            print("No seed found in database.")
+        if keys:
+            print("\nKey information:")
+            for key in keys:
+                key_id, path, address, wif, public, private, is_private = key
+                print(f"\nKey ID: {key_id}")
+                print(f"Path: {path}")
+                print(f"Address: {address}")
+                print(f"Has private key: {is_private}")
+                if wif:
+                    print(f"WIF: {wif}")
+                    print("↑ This private key can be imported into Electrum")
         
         conn.close()
+        
+        # If we found a private key, that's success
+        if master_key_data and master_key_data[0]:
+            return master_key_data[0]
+        elif wallet_data and wallet_data[0]:
+            return wallet_data[0]
+        
+        print("\nCould not extract seed directly from database.")
+        print("Check the output above for any private keys (WIF format) that can be imported into Electrum.")
         return None
     except Exception as e:
         print(f"Error accessing database: {e}")
