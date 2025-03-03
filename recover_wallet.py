@@ -66,6 +66,45 @@ def open_wallet(wallet_name):
         print(f"Error opening wallet: {e}")
         return None
 
+def list_utxos(wallet):
+    """
+    Directly examine the UTXOs (Unspent Transaction Outputs) in the wallet
+    """
+    print("\nUnspent Transaction Outputs (UTXOs):")
+    print("-" * 80)
+    print(f"{'TXID':<65} {'Output #':<8} {'Value (BTC)':<12} {'Confirmations'}")
+    print("-" * 80)
+    
+    try:
+        utxos = wallet.utxos()
+        if not utxos:
+            print("No unspent outputs found")
+            return False
+        
+        total_value = 0
+        for utxo in utxos:
+            # Try different ways to access UTXO data
+            try:
+                txid = utxo.txid if hasattr(utxo, 'txid') else (
+                    utxo.tx_hash if hasattr(utxo, 'tx_hash') else 
+                    (utxo.hash if hasattr(utxo, 'hash') else "Unknown"))
+                
+                output_n = utxo.output_n if hasattr(utxo, 'output_n') else "?"
+                value = utxo.value if hasattr(utxo, 'value') else 0
+                confirmations = utxo.confirmations if hasattr(utxo, 'confirmations') else "?"
+                
+                print(f"{txid:<65} {output_n:<8} {value / 1e8:<12.8f} {confirmations}")
+                total_value += value
+            except Exception as e:
+                print(f"Error accessing UTXO data: {e}")
+        
+        print("-" * 80)
+        print(f"Total value: {total_value / 1e8:.8f} BTC")
+        return True
+    except Exception as e:
+        print(f"Error listing UTXOs: {e}")
+        return False
+
 def display_wallet_info(wallet):
     """
     Display wallet information including addresses and balance
@@ -85,21 +124,23 @@ def display_wallet_info(wallet):
         network_name = wallet.network_name
     print(f"Network: {network_name}")
     
-    # Display addresses
-    print("\nAddresses:")
-    
     # Try to update wallet with latest blockchain information
     try:
         wallet.scan()
+        print("Wallet updated with latest blockchain information")
     except Exception as e:
         print(f"Warning: Could not scan wallet: {e}")
     
     # Get total wallet balance
     try:
         total_balance = wallet.balance()
+        print(f"\nTotal Wallet Balance: {total_balance / 1e8:.8f} BTC")
     except Exception as e:
         total_balance = 0
         print(f"Warning: Could not get wallet balance: {e}")
+    
+    # Display addresses
+    print("\nAddresses:")
     
     # Display each key/address
     for key in wallet.keys():
@@ -141,8 +182,11 @@ def display_wallet_info(wallet):
         print(f"- {address} (Path: {path})")
         print(f"  Balance: {address_balance / 1e8:.8f} BTC")
     
-    # Display total balance
-    print(f"\nTotal Balance: {total_balance / 1e8:.8f} BTC")
+    # List UTXOs directly
+    if total_balance > 0:
+        print("\nNOTE: Your wallet has a balance but it's not showing in individual addresses.")
+        print("This is a common issue with the bitcoinlib library. Let's examine the UTXOs directly:")
+        list_utxos(wallet)
 
 def calculate_safe_transaction_fee(network='bitcoin'):
     """
