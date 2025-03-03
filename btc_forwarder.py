@@ -226,9 +226,36 @@ def forward_funds(wallet, destination_address, amount, fee):
     try:
         # Create transaction
         tx = wallet.send_to(destination_address, amount, fee=fee)
-        logger.info(f"Transaction sent! Transaction ID: {tx.hash}")
+        
+        # Different versions of bitcoinlib use different attribute names for transaction ID
+        tx_id = None
+        for attr in ['hash', 'txid', 'tx_hash', 'id']:
+            if hasattr(tx, attr):
+                tx_id = getattr(tx, attr)
+                break
+        
+        if not tx_id and hasattr(tx, 'dict'):
+            # Try accessing as dictionary if available
+            tx_dict = tx.dict()
+            tx_id = tx_dict.get('txid') or tx_dict.get('hash') or tx_dict.get('tx_hash')
+        
+        if not tx_id:
+            # Last resort: convert to string and look for ID
+            tx_str = str(tx)
+            if "txid" in tx_str.lower():
+                # Try to extract ID from string representation
+                import re
+                match = re.search(r'(txid|hash|id)[\'"\s:=]+([a-fA-F0-9]{64})', tx_str, re.IGNORECASE)
+                if match:
+                    tx_id = match.group(2)
+            
+            # If we still don't have an ID, use a placeholder
+            if not tx_id:
+                tx_id = "Transaction sent (ID unavailable)"
+                
+        logger.info(f"Transaction sent! Transaction ID: {tx_id}")
         print(f"\nTransaction sent successfully!")
-        print(f"  Transaction ID: {tx.hash}")
+        print(f"  Transaction ID: {tx_id}")
         print(f"  Amount: {amount / 1e8:.8f} BTC")
         print(f"  Fee: {fee / 1e8:.8f} BTC")
         return tx
