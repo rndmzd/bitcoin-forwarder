@@ -76,21 +76,73 @@ def display_wallet_info(wallet):
     print("\nWallet Information:")
     print(f"Name: {wallet.name}")
     print(f"ID: {wallet.wallet_id}")
-    print(f"Network: {wallet.network.name}")
+    
+    # Get network name (different library versions use different attributes)
+    network_name = "Unknown"
+    if hasattr(wallet, 'network') and hasattr(wallet.network, 'name'):
+        network_name = wallet.network.name
+    elif hasattr(wallet, 'network_name'):
+        network_name = wallet.network_name
+    print(f"Network: {network_name}")
     
     # Display addresses
     print("\nAddresses:")
+    
+    # Try to update wallet with latest blockchain information
+    try:
+        wallet.scan()
+    except Exception as e:
+        print(f"Warning: Could not scan wallet: {e}")
+    
+    # Get total wallet balance
+    try:
+        total_balance = wallet.balance()
+    except Exception as e:
+        total_balance = 0
+        print(f"Warning: Could not get wallet balance: {e}")
+    
+    # Display each key/address
     for key in wallet.keys():
         address = key.address
         path = key.path
-        balance = wallet.utxos_address(address, as_dict=True)
-        balance_sum = sum([utxo['value'] for utxo in balance]) if balance else 0
+        
+        # Try different methods to get address balance
+        address_balance = 0
+        try:
+            # Try method 1: utxos_address if it exists
+            if hasattr(wallet, 'utxos_address'):
+                balance_data = wallet.utxos_address(address, as_dict=True)
+                address_balance = sum([utxo['value'] for utxo in balance_data]) if balance_data else 0
+            else:
+                # Try method 2: filter utxos by address
+                try:
+                    all_utxos = wallet.utxos()
+                    # Different UTXO object structures in different library versions
+                    for utxo in all_utxos:
+                        utxo_address = None
+                        # Try different attribute accesses for UTXO address
+                        if hasattr(utxo, 'address'):
+                            utxo_address = utxo.address
+                        elif hasattr(utxo, 'key') and hasattr(utxo.key, 'address'):
+                            utxo_address = utxo.key.address
+                        
+                        if utxo_address == address:
+                            # Try different attribute accesses for UTXO value
+                            if hasattr(utxo, 'value'):
+                                address_balance += utxo.value
+                            elif isinstance(utxo, dict) and 'value' in utxo:
+                                address_balance += utxo['value']
+                except Exception as e:
+                    print(f"  Warning: Could not get UTXOs: {e}")
+        except Exception as e:
+            address_balance = 0
+            print(f"  Warning: Could not get balance for {address}: {e}")
         
         print(f"- {address} (Path: {path})")
-        print(f"  Balance: {balance_sum / 1e8:.8f} BTC")
+        print(f"  Balance: {address_balance / 1e8:.8f} BTC")
     
     # Display total balance
-    print(f"\nTotal Balance: {wallet.balance() / 1e8:.8f} BTC")
+    print(f"\nTotal Balance: {total_balance / 1e8:.8f} BTC")
 
 def send_transaction(wallet, to_address, amount=None, fee=None):
     """
