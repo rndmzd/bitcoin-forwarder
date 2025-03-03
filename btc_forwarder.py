@@ -128,19 +128,27 @@ def monitor_wallet(wallet, destination_address, required_confirmations=3, check_
             wallet.scan()
             
             # Check for new unspent outputs (received transactions)
-            for utxo in wallet.utxos(as_dict=True):
-                # In dictionary mode, the UTXO structure is different
-                tx_id = utxo['txid']
+            for utxo in wallet.utxos():
+                # Handle both object and dictionary format
+                try:
+                    # Try object format first
+                    tx_id = utxo.txid if hasattr(utxo, 'txid') else utxo.transaction.hash
+                    confirmations = utxo.confirmations if hasattr(utxo, 'confirmations') else utxo.transaction.confirmations
+                    value = utxo.value
+                except AttributeError:
+                    # If above fails, try dictionary format
+                    tx_id = utxo['txid'] if 'txid' in utxo else utxo['tx_hash']
+                    confirmations = utxo['confirmations']
+                    value = utxo['value']
                 
                 # Skip if we've already processed this transaction
                 if tx_id in processed_txs:
                     continue
                 
-                # Check confirmation count
-                confirmations = utxo['confirmations']
+                # Log and display transaction info
                 logger.info(f"Found transaction {tx_id} with {confirmations} confirmations")
                 print(f"Found transaction: {tx_id}")
-                print(f"  Amount: {utxo['value'] / 1e8:.8f} BTC")
+                print(f"  Amount: {value / 1e8:.8f} BTC")
                 print(f"  Confirmations: {confirmations}/{required_confirmations}")
                 
                 if confirmations >= required_confirmations:
@@ -148,8 +156,8 @@ def monitor_wallet(wallet, destination_address, required_confirmations=3, check_
                     tx_fee = calculate_transaction_fee(service)
                     
                     # Create and send transaction to forward funds
-                    if utxo['value'] > tx_fee:
-                        amount_to_forward = utxo['value'] - tx_fee
+                    if value > tx_fee:
+                        amount_to_forward = value - tx_fee
                         logger.info(f"Forwarding {amount_to_forward} satoshis to {destination_address}")
                         print(f"Forwarding {amount_to_forward / 1e8:.8f} BTC to {destination_address}")
                         print(f"  Network fee: {tx_fee / 1e8:.8f} BTC")
@@ -157,7 +165,7 @@ def monitor_wallet(wallet, destination_address, required_confirmations=3, check_
                         forward_funds(wallet, destination_address, amount_to_forward, tx_fee)
                         processed_txs.add(tx_id)
                     else:
-                        logger.warning(f"Transaction value ({utxo['value']}) is too small to cover fee ({tx_fee})")
+                        logger.warning(f"Transaction value ({value}) is too small to cover fee ({tx_fee})")
                         print(f"Transaction value is too small to cover network fee. Skipping.")
                         processed_txs.add(tx_id)
             
