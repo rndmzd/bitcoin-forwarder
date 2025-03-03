@@ -16,6 +16,7 @@ import sys
 import logging
 import argparse
 import os
+import json
 from pathlib import Path
 from bitcoinlib.wallets import Wallet, wallet_exists
 from bitcoinlib.services.services import Service
@@ -25,6 +26,7 @@ from bitcoinlib.keys import Address
 log_dir = Path.home() / ".bitcoin_forwarder"
 os.makedirs(log_dir, exist_ok=True)
 log_file = log_dir / "bitcoin_forwarder.log"
+config_file = log_dir / "config.json"
 
 # Setup logging
 logging.basicConfig(
@@ -36,6 +38,43 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("BitcoinForwarder")
+
+def save_config(wallet_name, destination_address):
+    """
+    Save wallet name and destination address to config file
+    """
+    config = {
+        "wallet_name": wallet_name,
+        "destination_address": destination_address
+    }
+    
+    try:
+        with open(config_file, 'w') as f:
+            json.dump(config, f)
+        logger.info("Config saved successfully")
+    except Exception as e:
+        logger.error(f"Failed to save config: {e}")
+
+def load_config():
+    """
+    Load wallet name and destination address from config file
+    """
+    if not os.path.exists(config_file):
+        logger.info("No config file found")
+        return None, None
+    
+    try:
+        with open(config_file, 'r') as f:
+            config = json.load(f)
+        
+        wallet_name = config.get('wallet_name')
+        destination_address = config.get('destination_address')
+        
+        logger.info(f"Loaded config: wallet={wallet_name}, destination={destination_address}")
+        return wallet_name, destination_address
+    except Exception as e:
+        logger.error(f"Failed to load config: {e}")
+        return None, None
 
 def validate_bitcoin_address(address):
     """
@@ -89,18 +128,19 @@ def monitor_wallet(wallet, destination_address, required_confirmations=3, check_
             wallet.scan()
             
             # Check for new unspent outputs (received transactions)
-            for utxo in wallet.utxos():
-                tx_id = utxo.transaction.hash
+            for utxo in wallet.utxos(as_dict=True):
+                # In dictionary mode, the UTXO structure is different
+                tx_id = utxo['txid']
                 
                 # Skip if we've already processed this transaction
                 if tx_id in processed_txs:
                     continue
                 
                 # Check confirmation count
-                confirmations = utxo.transaction.confirmations
+                confirmations = utxo['confirmations']
                 logger.info(f"Found transaction {tx_id} with {confirmations} confirmations")
                 print(f"Found transaction: {tx_id}")
-                print(f"  Amount: {utxo.value / 1e8:.8f} BTC")
+                print(f"  Amount: {utxo['value'] / 1e8:.8f} BTC")
                 print(f"  Confirmations: {confirmations}/{required_confirmations}")
                 
                 if confirmations >= required_confirmations:
@@ -108,8 +148,8 @@ def monitor_wallet(wallet, destination_address, required_confirmations=3, check_
                     tx_fee = calculate_transaction_fee(service)
                     
                     # Create and send transaction to forward funds
-                    if utxo.value > tx_fee:
-                        amount_to_forward = utxo.value - tx_fee
+                    if utxo['value'] > tx_fee:
+                        amount_to_forward = utxo['value'] - tx_fee
                         logger.info(f"Forwarding {amount_to_forward} satoshis to {destination_address}")
                         print(f"Forwarding {amount_to_forward / 1e8:.8f} BTC to {destination_address}")
                         print(f"  Network fee: {tx_fee / 1e8:.8f} BTC")
@@ -117,7 +157,7 @@ def monitor_wallet(wallet, destination_address, required_confirmations=3, check_
                         forward_funds(wallet, destination_address, amount_to_forward, tx_fee)
                         processed_txs.add(tx_id)
                     else:
-                        logger.warning(f"Transaction value ({utxo.value}) is too small to cover fee ({tx_fee})")
+                        logger.warning(f"Transaction value ({utxo['value']}) is too small to cover fee ({tx_fee})")
                         print(f"Transaction value is too small to cover network fee. Skipping.")
                         processed_txs.add(tx_id)
             
@@ -273,8 +313,22 @@ def main():
     # Parse command line arguments
     args = parse_arguments()
     
-    # Get destination address from user
-    destination_address = input("Enter the Bitcoin address to forward funds to: ")
+    # Try to load config
+    saved_wallet_name, saved_destination_address = load_config()
+    
+    # Use wallet name from args if provided, otherwise from config, otherwise default
+    wallet_name = args.wallet_name if args.wallet_name != "forwarding_wallet" else (saved_wallet_name or "forwarding_wallet")
+    
+    # Get destination address from user or from config
+    destination_address = None
+    if saved_destination_address:
+        print(f"Found saved destination address: {saved_destination_address}")
+        use_saved = input("Use this address? (y/n): ").lower().strip()
+        if use_saved == 'y':
+            destination_address = saved_destination_address
+    
+    if not destination_address:
+        destination_address = input("Enter the Bitcoin address to forward funds to: ")
     
     # Validate address
     if not validate_bitcoin_address(destination_address):
@@ -282,12 +336,16 @@ def main():
         print("Invalid Bitcoin address provided. Exiting.")
         sys.exit(1)
     
+    # Save config
+    save_config(wallet_name, destination_address)
+    
     # Create or get existing wallet
-    wallet, wallet_address = get_or_create_wallet(args.wallet_name)
+    wallet, wallet_address = get_or_create_wallet(wallet_name)
     
     print(f"\nMonitoring for incoming transactions with {args.confirmations} confirmations required.")
     print(f"Funds will be forwarded to: {destination_address}")
     print(f"Log file is located at: {log_file}")
+    print(f"Config file is located at: {config_file}")
     print("Press Ctrl+C to exit\n")
     
     # Start monitoring for transactions
