@@ -187,15 +187,29 @@ def calculate_transaction_fee(service):
     Returns fee in satoshis
     """
     try:
+        # Try to get fee estimation from service
         fee_per_kb = service.estimatefee(4)  # Targeting confirmation within 4 blocks
+        logger.info(f"Fee estimation from service: {fee_per_kb} BTC/KB")
+        
+        # The API returns fee in BTC per KB
+        # Check if the fee is already in satoshis or if it's in BTC
+        if fee_per_kb > 0.1:  # If fee is > 0.1 BTC/KB, something is wrong
+            logger.warning(f"Fee estimation too high ({fee_per_kb} BTC/KB), using fallback")
+            fee_per_kb = 0.0001  # Fallback to 0.0001 BTC/KB
         
         # Convert to satoshis (1 BTC = 100,000,000 satoshis)
         # Assuming a typical transaction size of ~250 bytes
         tx_size = 250
         tx_fee = int(fee_per_kb * 1e8 * tx_size / 1024)
         
+        # Sanity check - cap maximum fee at 25,000 satoshis (0.00025 BTC)
+        max_fee = 25000  # 0.00025 BTC
+        if tx_fee > max_fee:
+            logger.warning(f"Calculated fee too high ({tx_fee} satoshis), capping at {max_fee}")
+            tx_fee = max_fee
+        
         # Ensure a minimum reasonable fee
-        min_fee = 1000  # 1000 satoshis minimum
+        min_fee = 1000  # 1000 satoshis minimum (0.00001 BTC)
         tx_fee = max(tx_fee, min_fee)
         
         logger.info(f"Calculated transaction fee: {tx_fee} satoshis")
